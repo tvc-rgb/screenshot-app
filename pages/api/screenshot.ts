@@ -9,7 +9,10 @@ type ScreenshotResult = {
   error?: string;
 };
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<ScreenshotResult[] | { error: string }>
+) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -24,7 +27,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   for (const url of urls) {
     try {
-      const apiUrl = `https://api.screenshotone.com/take?url=${encodeURIComponent(url)}&output=image&viewport_height=4000&viewport_width=1920`;
+      const apiUrl = `https://api.screenshotone.com/take?url=${encodeURIComponent(
+        url
+      )}&output=image&viewport_width=1920&viewport_height=4000&format=png`;
 
       const response = await fetch(apiUrl, {
         headers: {
@@ -33,20 +38,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
 
       if (!response.ok) {
-        const err = await response.text();
-        results.push({ url, error: `Screenshot failed: ${err}` });
+        const errorMessage = await response.text();
+        console.error(`[ERROR] ScreenshotOne response:`, errorMessage);
+        results.push({ url, error: `Screenshot failed: ${errorMessage}` });
         continue;
       }
 
       const buffer = await response.buffer();
-
-      // Optional: You could upload to Cloudinary or another CDN here
-      // For now, we'll use base64 for testing
       const base64Image = `data:image/png;base64,${buffer.toString('base64')}`;
 
       results.push({ url, imageUrl: base64Image });
-    } catch (err: any) {
-      results.push({ url, error: err.message || 'Unknown error' });
+    } catch (error: any) {
+      console.error(`[ERROR] Processing ${url}:`, error.message || error);
+      results.push({ url, error: error.message || 'Unknown error' });
     }
   }
 
