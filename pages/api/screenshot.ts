@@ -8,9 +8,24 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET!,
 });
 
-const getBrandName = (url: string) => {
-  const { hostname } = new URL(url);
-  return hostname.replace(/^www\./, '').split('.')[0];
+// --- Cloudinary upload wrapped in a Promise ---
+const uploadToCloudinary = (buffer: Buffer, folder: string) => {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        public_id: 'screenshot-1920x4000',
+        resource_type: 'image',
+      },
+      (error, result) => {
+        if (error) {
+          return reject(error);
+        }
+        resolve(result);
+      }
+    );
+    stream.end(buffer);
+  });
 };
 
 const captureScreenshot = async (url: string): Promise<Buffer> => {
@@ -22,17 +37,21 @@ const captureScreenshot = async (url: string): Promise<Buffer> => {
     },
     body: JSON.stringify({
       url,
-      fullPage: true,
-      viewportWidth: 1920,
-      format: 'png',
+      screenshot_options: {
+        viewport: {
+          width: 1920,
+          height: 4000,
+        },
+        format: 'png',
+      },
     }),
   });
 
   const data = await res.json();
-  console.log("ScreenshotOne raw response for", url, ":", data);
+  console.log('ScreenshotOne raw response:', data);
 
   if (!data?.screenshot?.url) {
-    throw new Error(`ScreenshotOne failed for ${url}: ${JSON.stringify(data)}`);
+    throw new Error(`ScreenshotOne failed: ${JSON.stringify(data)}`);
   }
 
   const imageRes = await fetch(data.screenshot.url);
@@ -40,65 +59,31 @@ const captureScreenshot = async (url: string): Promise<Buffer> => {
   return Buffer.from(buffer);
 };
 
-const cropAndUpload = async (imageBuffer: Buffer, brand: string) => {
-  const metadata = await sharp(imageBuffer).metadata();
-  const chunks: string[] = [];
-  const width = metadata.width || 1920;
-  const height = metadata.height || 4000;
-
-  for (let top = 0, i = 1; top < height; top += 4000, i++) {
-    const crop = await sharp(imageBuffer)
-      .extract({ left: 0, top, width, height: Math.min(4000, height - top) })
-      .toBuffer();
-
-    console.log("Uploading this buffer to Cloudinary for", brand);
-
-    const uploadResult = await new Promise<any>((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
-        {
-          folder: brand,
-          public_id: `part-${i}`,
-          resource_type: 'image',
-        },
-        (error, result) => {
-          if (error) reject(error);
-          else resolve(result);
-        }
-      );
-
-      stream.end(crop);
-    });
-
-    console.log("Cloudinary response:", uploadResult?.secure_url);
-    chunks.push(uploadResult.secure_url);
-  }
-
-  return chunks;
-};
-
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+  if (req.method !== 'POST') {
+    return res.status(405).json({ message: 'Method not allowed' });
+  }
 
   const { urls } = req.body;
-  if (!Array.isArray(urls) || urls.length === 0) {
-    return res.status(400).json({ error: 'No URLs provided' });
+  if (!Array.isArray(urls)) {
+    return res.status(400).json({ message: 'Invalid request body. Expected an array of URLs.' });
   }
 
-  const results: Record<string, string[]> = {};
+  const results = [];
 
   for (const url of urls) {
     try {
-      const brand = getBrandName(url);
-      const screenshot = await captureScreenshot(url);
-      const uploads = await cropAndUpload(screenshot, brand);
-      results[brand] = uploads;
-    } catch (err) {
-      console.error(`❌ Error processing ${url}:`, err);
-      results[url] = [`Error: ${err instanceof Error ? err.message : String(err)}`];
+      const imageBuffer = await captureScreenshot(url);
+      const processedImage = await sharp(imageBuffer).png().toBuffer();
+      const domainName = new URL(url).hostname.replace('www.', '');
+
+      const uploadResult: any = await uploadToCloudinary(processedImage, domainName);
+      results.push({ url, cloudinaryUrl: uploadResult.secure_url });
+    } catch (error: any) {
+      console.error(`Error processing ${url}:`, error);
+      results.push({ url, error: error.message });
     }
   }
 
-  console.log("FINAL screenshot results:", results);
-
-  res.status(200).json({ results });
+  return res.status(200).json({ message: 'Processed', results });
 }
