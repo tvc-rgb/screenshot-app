@@ -10,7 +10,7 @@ cloudinary.config({
 
 const getBrandName = (url: string) => {
   const { hostname } = new URL(url);
-  return hostname.replace(/^www\./, '').split('.')[0]; // e.g., "wormhole"
+  return hostname.replace(/^www\./, '').split('.')[0];
 };
 
 const captureScreenshot = async (url: string): Promise<Buffer> => {
@@ -29,9 +29,10 @@ const captureScreenshot = async (url: string): Promise<Buffer> => {
   });
 
   const data = await res.json();
+  console.log("ScreenshotOne raw response for", url, ":", data);
 
   if (!data?.screenshot?.url) {
-    throw new Error(`ScreenshotOne failed: ${JSON.stringify(data)}`);
+    throw new Error(`ScreenshotOne failed for ${url}: ${JSON.stringify(data)}`);
   }
 
   const imageRes = await fetch(data.screenshot.url);
@@ -50,6 +51,8 @@ const cropAndUpload = async (imageBuffer: Buffer, brand: string) => {
       .extract({ left: 0, top, width, height: Math.min(4000, height - top) })
       .toBuffer();
 
+    console.log("Uploading this buffer to Cloudinary for", brand);
+
     const uploadResult = await new Promise<any>((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
@@ -66,6 +69,7 @@ const cropAndUpload = async (imageBuffer: Buffer, brand: string) => {
       stream.end(crop);
     });
 
+    console.log("Cloudinary response:", uploadResult?.secure_url);
     chunks.push(uploadResult.secure_url);
   }
 
@@ -76,7 +80,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   const { urls } = req.body;
-
   if (!Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ error: 'No URLs provided' });
   }
@@ -90,10 +93,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const uploads = await cropAndUpload(screenshot, brand);
       results[brand] = uploads;
     } catch (err) {
-      console.error(`Error processing ${url}`, err);
-      results[url] = [`Error: ${err}`];
+      console.error(`❌ Error processing ${url}:`, err);
+      results[url] = [`Error: ${err instanceof Error ? err.message : String(err)}`];
     }
   }
+
+  console.log("FINAL screenshot results:", results);
 
   res.status(200).json({ results });
 }
