@@ -1,13 +1,13 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 
 export default function Home() {
   const [urls, setUrls] = useState('');
-  const [results, setResults] = useState<Record<string, string[]> | null>(null);
+  const [images, setImages] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
-    setLoading(true);
     try {
+      setLoading(true);
       const res = await fetch('/api/screenshot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -15,52 +15,44 @@ export default function Home() {
       });
 
       const data = await res.json();
-      setResults(data.results || {});
+
+      // defensive: ensure data.screenshots is an array
+      if (Array.isArray(data.screenshots)) {
+        setImages(data.screenshots);
+      } else {
+        setImages([]);
+        console.error('Unexpected response:', data);
+      }
     } catch (err) {
-      console.error('Error:', err);
-      setResults({ Error: ['Something went wrong'] });
+      console.error('Failed to submit:', err);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div style={{ padding: '2rem', fontFamily: 'sans-serif', maxWidth: 800, margin: 'auto' }}>
-      <h1>🖼️ Screenshot Cropper</h1>
+    <div style={{ padding: '2rem', fontFamily: 'Arial, sans-serif' }}>
+      <h1>Screenshot App</h1>
       <textarea
-        rows={10}
+        rows={6}
         cols={60}
+        placeholder="Enter URLs (one per line)"
         value={urls}
         onChange={(e) => setUrls(e.target.value)}
-        placeholder="Paste one URL per line"
-        style={{ width: '100%', padding: '1rem', fontSize: '1rem', marginBottom: '1rem' }}
       />
       <br />
-      <button
-        onClick={handleSubmit}
-        disabled={loading}
-        style={{ padding: '0.75rem 1.5rem', fontSize: '1rem' }}
-      >
-        {loading ? 'Processing…' : 'Generate Screenshots'}
+      <button onClick={handleSubmit} disabled={loading} style={{ marginTop: '1rem' }}>
+        {loading ? 'Generating...' : 'Generate Screenshots'}
       </button>
 
-      {results && (
-        <div style={{ marginTop: '2rem' }}>
-          <h2>📦 Results</h2>
-          {Object.entries(results).map(([brand, images]) => (
-            <div key={brand} style={{ marginBottom: '2rem' }}>
-              <h3>{brand}</h3>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
-                {images.map((url, i) => (
-                  <a key={i} href={url} target="_blank" rel="noopener noreferrer">
-                    <img src={url} alt={`Screenshot ${i}`} width="240" style={{ borderRadius: 4 }} />
-                  </a>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <div style={{ marginTop: '2rem' }}>
+        {images.length > 0 && <h2>Generated Screenshots:</h2>}
+        {images.map((src, idx) => (
+          <div key={idx} style={{ marginBottom: '2rem' }}>
+            <img src={src} alt={`Screenshot ${idx + 1}`} style={{ maxWidth: '100%', border: '1px solid #ccc' }} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
