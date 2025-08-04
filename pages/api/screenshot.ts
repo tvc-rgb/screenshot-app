@@ -1,53 +1,94 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import sharp from 'sharp';
+import { v2 as cloudinary } from 'cloudinary';
 
-type Data = {
-  message: string;
-  urls?: string[];
-  error?: string;
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME!,
+  api_key: process.env.CLOUDINARY_API_KEY!,
+  api_secret: process.env.CLOUDINARY_API_SECRET!,
+});
+
+const getBrandName = (url: string) => {
+  const { hostname } = new URL(url);
+  return hostname.replace(/^www\./, '').split('.')[0]; // e.g., "wormhole"
 };
 
-export default function handler(
-  req: NextApiRequest,
-  res: NextApiResponse<Data>
-) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ message: 'Method not allowed' });
+const captureScreenshot = async (url: string): Promise<Buffer> => {
+  const res = await fetch('https://api.screenshotone.com/take', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.SCREENSHOTONE_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      url,
+      fullPage: true,
+      viewportWidth: 1920,
+      format: 'png',
+    }),
+  });
+
+  const data = await res.json();
+  const imageRes = await fetch(data.screenshot.url);
+  const buffer = await imageRes.arrayBuffer();
+  return Buffer.from(buffer);
+};
+
+const cropAndUpload = async (imageBuffer: Buffer, brand: string) => {
+  const metadata = await sharp(imageBuffer).metadata();
+  const chunks: string[] = [];
+  const width = metadata.width || 1920;
+  const height = metadata.height || 4000;
+
+  for (let top = 0, i = 1; top < height; top += 4000, i++) {
+    const crop = await sharp(imageBuffer)
+      .extract({ left: 0, top, width, height: Math.min(4000, height - top) })
+      .toBuffer();
+
+    const uploadResult = await new Promise<any>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: brand,
+          public_id: `part-${i}`,
+          resource_type: 'image',
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
+
+      stream.end(crop);
+    });
+
+    chunks.push(uploadResult.secure_url);
   }
 
-  try {
-    const { urls } = req.body;
+  return chunks;
+};
 
-    if (!urls || !Array.isArray(urls)) {
-      return res.status(400).json({ 
-        message: 'Bad request',
-        error: 'URLs must be provided as an array' 
-      });
-    }
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
-    if (urls.length === 0) {
-      return res.status(400).json({ 
-        message: 'Bad request',
-        error: 'At least one URL must be provided' 
-      });
-    }
+  const { urls } = req.body;
 
-    // Log the URLs for now
-    console.log('Received URLs for screenshot generation:');
-    urls.forEach((url, index) => {
-      console.log(`${index + 1}. ${url}`);
-    });
-
-    // TODO: Implement actual screenshot logic here
-
-    res.status(200).json({ 
-      message: 'URLs received successfully',
-      urls: urls 
-    });
-  } catch (error) {
-    console.error('Error processing screenshot request:', error);
-    res.status(500).json({ 
-      message: 'Internal server error',
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: 'No URLs provided' });
   }
+
+  const results: Record<string, string[]> = {};
+
+  for (const url of urls) {
+    try {
+      const brand = getBrandName(url);
+      const screenshot = await captureScreenshot(url);
+      const uploads = await cropAndUpload(screenshot, brand);
+      results[brand] = uploads;
+    } catch (err) {
+      console.error(`Error processing ${url}`, err);
+      results[url] = [`Error: ${err}`];
+    }
+  }
+
+  res.status(200).json({ results });
 }
