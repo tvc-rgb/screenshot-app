@@ -29,6 +29,11 @@ const captureScreenshot = async (url: string): Promise<Buffer> => {
   });
 
   const data = await res.json();
+
+  if (!data?.screenshot?.url) {
+    throw new Error(`ScreenshotOne failed: ${JSON.stringify(data)}`);
+  }
+
   const imageRes = await fetch(data.screenshot.url);
   const buffer = await imageRes.arrayBuffer();
   return Buffer.from(buffer);
