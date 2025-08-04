@@ -1,89 +1,54 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import sharp from 'sharp';
-import { v2 as cloudinary } from 'cloudinary';
+import fetch from 'node-fetch';
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME!,
-  api_key: process.env.CLOUDINARY_API_KEY!,
-  api_secret: process.env.CLOUDINARY_API_SECRET!,
-});
+const SCREENSHOTONE_API_KEY = process.env.SCREENSHOTONE_API_KEY;
 
-// --- Cloudinary upload wrapped in a Promise ---
-const uploadToCloudinary = (buffer: Buffer, folder: string) => {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        folder,
-        public_id: 'screenshot-1920x4000',
-        resource_type: 'image',
-      },
-      (error, result) => {
-        if (error) {
-          return reject(error);
-        }
-        resolve(result);
-      }
-    );
-    stream.end(buffer);
-  });
-};
-
-const captureScreenshot = async (url: string): Promise<Buffer> => {
-  const res = await fetch('https://api.screenshotone.com/take', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.SCREENSHOTONE_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      url,
-      screenshot_options: {
-        viewport: {
-          width: 1920,
-          height: 4000,
-        },
-        format: 'png',
-      },
-    }),
-  });
-
-  const data = await res.json();
-  console.log('ScreenshotOne raw response:', data);
-
-  if (!data?.screenshot?.url) {
-    throw new Error(`ScreenshotOne failed: ${JSON.stringify(data)}`);
-  }
-
-  const imageRes = await fetch(data.screenshot.url);
-  const buffer = await imageRes.arrayBuffer();
-  return Buffer.from(buffer);
+type ScreenshotResult = {
+  url: string;
+  imageUrl?: string;
+  error?: string;
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ message: 'Method not allowed' });
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
   const { urls } = req.body;
+
   if (!Array.isArray(urls)) {
-    return res.status(400).json({ message: 'Invalid request body. Expected an array of URLs.' });
+    return res.status(400).json({ error: 'Invalid request: "urls" must be an array' });
   }
 
-  const results = [];
+  const results: ScreenshotResult[] = [];
 
   for (const url of urls) {
     try {
-      const imageBuffer = await captureScreenshot(url);
-      const processedImage = await sharp(imageBuffer).png().toBuffer();
-      const domainName = new URL(url).hostname.replace('www.', '');
+      const apiUrl = `https://api.screenshotone.com/take?url=${encodeURIComponent(url)}&output=image&viewport_height=4000&viewport_width=1920`;
 
-      const uploadResult: any = await uploadToCloudinary(processedImage, domainName);
-      results.push({ url, cloudinaryUrl: uploadResult.secure_url });
-    } catch (error: any) {
-      console.error(`Error processing ${url}:`, error);
-      results.push({ url, error: error.message });
+      const response = await fetch(apiUrl, {
+        headers: {
+          Authorization: `Bearer ${SCREENSHOTONE_API_KEY}`,
+        },
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        results.push({ url, error: `Screenshot failed: ${err}` });
+        continue;
+      }
+
+      const buffer = await response.buffer();
+
+      // Optional: You could upload to Cloudinary or another CDN here
+      // For now, we'll use base64 for testing
+      const base64Image = `data:image/png;base64,${buffer.toString('base64')}`;
+
+      results.push({ url, imageUrl: base64Image });
+    } catch (err: any) {
+      results.push({ url, error: err.message || 'Unknown error' });
     }
   }
 
-  return res.status(200).json({ message: 'Processed', results });
+  res.status(200).json(results);
 }
